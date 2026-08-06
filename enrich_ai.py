@@ -387,7 +387,13 @@ def main():
     # 2단계
     enriched = enrich_all(client, df.to_dict("records"))
     for key in ["판매상품명", "브랜드", "상세설명_한글", "태그", "주의사항"]:
-        df[key] = [e.get(key, "") for e in enriched]
+        vals = [e.get(key, "") for e in enriched]
+        if key == "브랜드" and "브랜드" in df.columns:
+            # 수집 단계에서 화이트리스트로 확정한 브랜드가 있으면 그쪽을 신뢰한다.
+            # LLM 추측보다 정확하고 표기도 일관된다.
+            vals = [old.strip() or new
+                    for old, new in zip(df["브랜드"].astype(str), vals)]
+        df[key] = vals
 
     # 보기 좋은 순서로 재배치
     head = ["판매상품명", "브랜드", "카테고리ID", "카테고리경로", "매핑신뢰도",
