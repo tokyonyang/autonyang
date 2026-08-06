@@ -29,6 +29,7 @@
 """
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -256,6 +257,100 @@ def filter_items(items, brands=None, exclude_used=True):
 
 
 # ----------------------------------------------------------------------
+# 장르 필터
+# ----------------------------------------------------------------------
+GENRE_URL = "https://openapi.rakuten.co.jp/ichibagt/api/IchibaGenre/Search/20260401"
+ANCESTRY_CACHE = "genre_ancestry.json"
+
+
+def _genre_call(session, genre_id):
+    params = {"applicationId": APP_ID, "accessKey": ACCESS_KEY,
+              "genreId": genre_id, "format": "json"}
+    r = session.get(GENRE_URL, params=params, timeout=20)
+    return r.json() if r.status_code == 200 else {}
+
+
+def list_genres(session, genre_id=0):
+    """장르 트리 한 단계를 출력. 허용할 장르ID를 눈으로 고르기 위한 용도."""
+    d = _genre_call(session, genre_id)
+
+    def unwrap(node):
+        return node.get("child") or node.get("parent") or node if isinstance(node, dict) else {}
+
+    cur = d.get("current") or {}
+    if isinstance(cur, list):
+        cur = cur[0] if cur else {}
+    if cur:
+        print(f"\n현재: [{cur.get('genreId','')}] {cur.get('genreName','')}")
+
+    children = d.get("children") or []
+    if not children:
+        print("  하위 장르 없음")
+        return
+    print(f"\n{'장르ID':>10}  장르명")
+    print("  " + "-" * 44)
+    for c in children:
+        n = unwrap(c)
+        print(f"{str(n.get('genreId','')):>10}  {n.get('genreName','')}")
+    print(f"\n총 {len(children)}개. 더 내려가려면 --genre <장르ID> 를 붙여 다시 실행하세요.")
+
+
+def _load_ancestry_cache():
+    if os.path.exists(ANCESTRY_CACHE):
+        try:
+            with open(ANCESTRY_CACHE, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_ancestry_cache(cache):
+    with open(ANCESTRY_CACHE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def genre_ancestry(session, genre_id, cache):
+    """genreId의 조상 ID 목록(자기 자신 포함)을 반환. 조회 결과는 캐시."""
+    key = str(genre_id)
+    if key in cache:
+        return cache[key]
+
+    d = _genre_call(session, genre_id)
+    ids = []
+    for anc in (d.get("parents") or d.get("ancestors") or []):
+        n = anc.get("parent") or anc if isinstance(anc, dict) else {}
+        if n.get("genreId"):
+            ids.append(str(n["genreId"]))
+    ids.append(key)
+
+    cache[key] = ids
+    _save_ancestry_cache(cache)
+    time.sleep(API_DELAY)
+    return ids
+
+
+def filter_by_genre(session, items, allowed):
+    """허용 장르(및 그 하위)에 속한 상품만 남긴다."""
+    allowed = {str(x).strip() for x in allowed if str(x).strip()}
+    if not allowed:
+        return items, 0
+
+    cache = _load_ancestry_cache()
+    kept, dropped = [], 0
+    for it in items:
+        gid = it.get("genreId")
+        if not gid:
+            dropped += 1
+            continue
+        if set(genre_ancestry(session, gid, cache)) & allowed:
+            kept.append(it)
+        else:
+            dropped += 1
+    return kept, dropped
+
+
+# ----------------------------------------------------------------------
 # 이미지 / URL 유틸
 # ----------------------------------------------------------------------
 _EX = re.compile(r"_ex=\d+x\d+")
@@ -399,6 +494,8 @@ def main():
         sp.add_argument("--rate", type=float, default=9.5, help="엔/원 환율")
         sp.add_argument("--brands", default=None,
                         help="브랜드 목록 파일. 지정하면 해당 브랜드 상품만 남김")
+        sp.add_argument("--allow-genres", default=None,
+                        help="허용 장르ID 목록. 쉼표로 구분. 하위 장르도 자동 포함")
         sp.add_argument("--allow-used", action="store_true",
                         help="중고/훼손품/럭키백도 포함 (기본은 제외)")
 
@@ -418,13 +515,21 @@ def main():
     s4.add_argument("--realtime", action="store_true", help="실시간 랭킹")
     common(s4)
 
+    s5 = sub.add_parser("genres", help="장르 트리 조회 (허용 장르ID 확인용)")
+    s5.add_argument("--genre", type=int, default=0, help="비우면 최상위 장르 목록")
+
     s3 = sub.add_parser("urls", help="URL 목록 파일로 개별 수집")
     s3.add_argument("file")
     common(s3)
 
     a = p.parse_args()
-    cfg = PriceConfig(jpy_krw=a.rate)
     session = _session()
+
+    if a.cmd == "genres":
+        list_genres(session, a.genre)
+        return
+
+    cfg = PriceConfig(jpy_krw=a.rate)
 
     if a.cmd == "search":
         print(f"[검색] {a.keyword}")
@@ -469,6 +574,12 @@ def main():
             time.sleep(API_DELAY)
 
     print(f"\nAPI 수집 {len(items)}건")
+
+    if getattr(a, "allow_genres", None):
+        allowed = a.allow_genres.split(",")
+        n0 = len(items)
+        items, dropped = filter_by_genre(session, items, allowed)
+        print(f"장르 필터 통과 {len(items)}/{n0}건 (제외 {dropped})")
 
     brands = load_brands(a.brands) if getattr(a, "brands", None) else None
     if brands:
