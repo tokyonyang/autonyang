@@ -1,1 +1,16 @@
+# 실행 산출물
+rakuten_items.xlsx
+final.xlsx
+upload.csv
+actions.csv
+*.log
 
+# 파이썬
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 로컬 비밀값 (절대 커밋 금지)
+.env
+*.key
