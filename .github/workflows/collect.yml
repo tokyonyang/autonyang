@@ -7,12 +7,23 @@ on:
       mode:
         description: "수집 방식"
         type: choice
-        options: [search, shop, urls]
-        default: search
+        options: [ranking, search, shop, urls]
+        default: ranking
       query:
-        description: "키워드 / 샵코드 (urls 모드면 urls.txt 사용)"
+        description: "키워드 / 샵코드 (ranking·urls 모드에서는 비워두세요)"
         required: false
         default: ""
+      genre:
+        description: "[ranking] 장르ID. 비우면 종합 랭킹"
+        default: ""
+      realtime:
+        description: "[ranking] 실시간 랭킹"
+        type: boolean
+        default: false
+      brands_only:
+        description: "brands.txt 에 있는 브랜드 상품만 수집"
+        type: boolean
+        default: true
       max:
         description: "최대 수집 개수"
         default: "50"
@@ -60,10 +71,17 @@ jobs:
         run: |
           ARGS=""
           [ "${{ inputs.images }}" = "true" ] && ARGS="$ARGS --images"
+          [ "${{ inputs.brands_only }}" = "true" ] && ARGS="$ARGS --brands brands.txt"
           [ -n "${{ inputs.min_price }}" ] && ARGS="$ARGS --min-price ${{ inputs.min_price }}"
           [ -n "${{ inputs.max_price }}" ] && ARGS="$ARGS --max-price ${{ inputs.max_price }}"
 
-          if [ "${{ inputs.mode }}" = "urls" ]; then
+          if [ "${{ inputs.mode }}" = "ranking" ]; then
+            [ -n "${{ inputs.genre }}" ] && ARGS="$ARGS --genre ${{ inputs.genre }}"
+            [ "${{ inputs.realtime }}" = "true" ] && ARGS="$ARGS --realtime"
+            python rakuten_collector.py ranking \
+              --max "${{ inputs.max }}" --rate "${{ inputs.rate }}" \
+              --out rakuten_items.xlsx $ARGS
+          elif [ "${{ inputs.mode }}" = "urls" ]; then
             python rakuten_collector.py urls urls.txt \
               --max "${{ inputs.max }}" --rate "${{ inputs.rate }}" \
               --out rakuten_items.xlsx $ARGS
