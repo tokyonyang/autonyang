@@ -103,8 +103,7 @@ def _session() -> requests.Session:
 
 def api_call(session: requests.Session, _url: str = API_URL, **params) -> dict:
     """Item Search / Ranking API 호출. 429는 백오프 후 재시도."""
-    if not APP_ID or not ACCESS_KEY:
-        sys.exit("RAKUTEN_APP_ID / RAKUTEN_ACCESS_KEY 환경변수를 설정하세요.")
+    _check_keys()
 
     base = {
         "applicationId": APP_ID,
@@ -126,7 +125,12 @@ def api_call(session: requests.Session, _url: str = API_URL, **params) -> dict:
             continue
         if r.status_code == 404:
             return {"items": [], "count": 0}
-        raise RuntimeError(f"API {r.status_code}: {r.text[:300]}")
+        try:
+            e = r.json()
+            detail = f"{e.get('error','')}: {e.get('error_description','')}"
+        except Exception:
+            detail = r.text[:200]
+        sys.exit(f"API 오류 [{r.status_code}] {detail}")
     raise RuntimeError("재시도 한도 초과")
 
 
@@ -263,11 +267,31 @@ GENRE_URL = "https://openapi.rakuten.co.jp/ichibagt/api/IchibaGenre/Search/20260
 ANCESTRY_CACHE = "genre_ancestry.json"
 
 
+def _check_keys():
+    """키가 비었거나 자리표시자 그대로면 즉시 알려준다."""
+    bad = {"", "...", "your_app_id", "xxx"}
+    if APP_ID.strip() in bad or ACCESS_KEY.strip() in bad:
+        sys.exit(
+            "RAKUTEN_APP_ID / RAKUTEN_ACCESS_KEY 가 설정되지 않았습니다.\n"
+            "  https://webservice.rakuten.co.jp/app/list 에서 실제 값을 확인해\n"
+            '  export RAKUTEN_APP_ID="1234567890123456789"\n'
+            '  export RAKUTEN_ACCESS_KEY="abcdef..."\n'
+            "  처럼 따옴표 안에 실제 값을 넣어 주세요.")
+
+
 def _genre_call(session, genre_id):
+    _check_keys()
     params = {"applicationId": APP_ID, "accessKey": ACCESS_KEY,
               "genreId": genre_id, "format": "json"}
     r = session.get(GENRE_URL, params=params, timeout=20)
-    return r.json() if r.status_code == 200 else {}
+    if r.status_code != 200:
+        try:
+            e = r.json()
+            msg = f"{e.get('error','')}: {e.get('error_description','')}"
+        except Exception:
+            msg = r.text[:200]
+        sys.exit(f"장르 API 오류 [{r.status_code}] {msg}")
+    return r.json()
 
 
 def list_genres(session, genre_id=0):
@@ -285,7 +309,10 @@ def list_genres(session, genre_id=0):
 
     children = d.get("children") or []
     if not children:
-        print("  하위 장르 없음")
+        if not cur:
+            print("응답이 비어 있습니다. 장르ID가 올바른지 확인하세요.")
+        else:
+            print("  하위 장르 없음 (여기가 말단 장르입니다)")
         return
     print(f"\n{'장르ID':>10}  장르명")
     print("  " + "-" * 44)
