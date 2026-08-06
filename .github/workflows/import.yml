@@ -1,1 +1,34 @@
+name: 등록상품 DB 적재
 
+# 스마트스토어에 실제로 등록을 마친 뒤 실행하세요.
+# 수집 워크플로의 아티팩트에서 final.xlsx 를 받아 리포에 올린 다음 돌리면 됩니다.
+on:
+  workflow_dispatch:
+    inputs:
+      file:
+        description: "적재할 파일 경로 (리포에 커밋된 파일)"
+        default: "final.xlsx"
+      rate:
+        description: "등록 시점 엔/원 환율"
+        default: "9.5"
+      margin:
+        description: "목표 마진율"
+        default: "0.30"
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 적재
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python monitor.py import "${{ inputs.file }}" \
+            --rate "${{ inputs.rate }}" --margin "${{ inputs.margin }}"

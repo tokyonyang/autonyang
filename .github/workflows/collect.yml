@@ -1,0 +1,121 @@
+name: 상품 수집
+
+# Actions 탭에서 버튼으로 실행합니다. (Run workflow)
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "수집 방식"
+        type: choice
+        options: [search, shop, urls]
+        default: search
+      query:
+        description: "키워드 / 샵코드 (urls 모드면 urls.txt 사용)"
+        required: false
+        default: ""
+      max:
+        description: "최대 수집 개수"
+        default: "50"
+      images:
+        description: "상품페이지까지 방문해 고화질 이미지 수집 (느림)"
+        type: boolean
+        default: true
+      translate:
+        description: "AI 번역 + 카테고리 매핑"
+        type: boolean
+        default: true
+      rate:
+        description: "엔/원 환율"
+        default: "9.5"
+      min_price:
+        description: "최소 가격(엔), 비우면 제한 없음"
+        default: ""
+      max_price:
+        description: "최대 가격(엔), 비우면 제한 없음"
+        default: ""
+
+permissions:
+  contents: write        # genre_cache.json 을 리포에 되돌려 저장
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 수집
+        env:
+          RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+          RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
+        run: |
+          ARGS=""
+          [ "${{ inputs.images }}" = "true" ] && ARGS="$ARGS --images"
+          [ -n "${{ inputs.min_price }}" ] && ARGS="$ARGS --min-price ${{ inputs.min_price }}"
+          [ -n "${{ inputs.max_price }}" ] && ARGS="$ARGS --max-price ${{ inputs.max_price }}"
+
+          if [ "${{ inputs.mode }}" = "urls" ]; then
+            python rakuten_collector.py urls urls.txt \
+              --max "${{ inputs.max }}" --rate "${{ inputs.rate }}" \
+              --out rakuten_items.xlsx $ARGS
+          else
+            python rakuten_collector.py "${{ inputs.mode }}" "${{ inputs.query }}" \
+              --max "${{ inputs.max }}" --rate "${{ inputs.rate }}" \
+              --out rakuten_items.xlsx $ARGS
+          fi
+
+      - name: 번역 + 카테고리 매핑
+        if: ${{ inputs.translate }}
+        env:
+          RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+          RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          CAT=""
+          [ -f naver_categories.csv ] && CAT="--cat naver_categories.csv"
+          python enrich_ai.py rakuten_items.xlsx $CAT --out final.xlsx
+
+      - name: 스마트스토어 양식 변환
+        if: ${{ inputs.translate }}
+        run: |
+          python to_smartstore.py final.xlsx \
+            --template template.csv \
+            --origin-code "${{ vars.ORIGIN_CODE }}" \
+            --importer "${{ vars.IMPORTER }}" \
+            --ship-template "${{ vars.SHIP_TEMPLATE }}" \
+            --as-phone "${{ vars.AS_PHONE }}" \
+            --out upload.csv
+
+      # 장르 매핑 캐시를 리포에 저장해두면 다음 실행부터 LLM 호출이 없습니다.
+      - name: 캐시 저장
+        if: ${{ inputs.translate }}
+        run: |
+          if [ -f genre_cache.json ] && ! git diff --quiet genre_cache.json 2>/dev/null; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add genre_cache.json
+            git commit -m "chore: 장르 매핑 캐시 갱신"
+            git push
+          else
+            echo "캐시 변경 없음"
+          fi
+
+      - name: 결과 파일 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ github.run_number }}
+          path: |
+            rakuten_items.xlsx
+            final.xlsx
+            upload.csv
+          if-no-files-found: warn
+          retention-days: 30

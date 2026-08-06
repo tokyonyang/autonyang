@@ -1,0 +1,53 @@
+name: 가격 재고 감시
+
+on:
+  schedule:
+    # GitHub Actions cron은 UTC 기준입니다.
+    # 18:00 UTC = 한국 시간 다음날 03:00
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "회당 점검 건수"
+        default: "300"
+      min_margin:
+        description: "이 마진율 아래면 경고 (0.10 = 10%)"
+        default: "0.10"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330      # 라쿠텐 API 1초 간격이라 넉넉히
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 감시 실행
+        env:
+          RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+          RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python monitor.py check \
+            --limit "${{ inputs.limit || '300' }}" \
+            --min-margin "${{ inputs.min_margin || '0.10' }}" \
+            --out actions.csv
+
+      - name: 조치 목록 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: actions-${{ github.run_number }}
+          path: actions.csv
+          if-no-files-found: ignore
+          retention-days: 60
