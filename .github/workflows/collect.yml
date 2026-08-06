@@ -24,6 +24,9 @@ on:
         description: "brands.txt 에 있는 브랜드 상품만 수집"
         type: boolean
         default: true
+      allow_genres:
+        description: "허용 장르ID (쉼표 구분). 비우면 GENRE_ALLOWLIST 변수 사용"
+        default: ""
       max:
         description: "최대 수집 개수"
         default: "50"
@@ -72,6 +75,9 @@ jobs:
           ARGS=""
           [ "${{ inputs.images }}" = "true" ] && ARGS="$ARGS --images"
           [ "${{ inputs.brands_only }}" = "true" ] && ARGS="$ARGS --brands brands.txt"
+          GENRES="${{ inputs.allow_genres }}"
+          [ -z "$GENRES" ] && GENRES="${{ vars.GENRE_ALLOWLIST }}"
+          [ -n "$GENRES" ] && ARGS="$ARGS --allow-genres $GENRES"
           [ -n "${{ inputs.min_price }}" ] && ARGS="$ARGS --min-price ${{ inputs.min_price }}"
           [ -n "${{ inputs.max_price }}" ] && ARGS="$ARGS --max-price ${{ inputs.max_price }}"
 
@@ -115,13 +121,12 @@ jobs:
 
       # 장르 매핑 캐시를 리포에 저장해두면 다음 실행부터 LLM 호출이 없습니다.
       - name: 캐시 저장
-        if: ${{ inputs.translate }}
         run: |
-          if [ -f genre_cache.json ] && ! git diff --quiet genre_cache.json 2>/dev/null; then
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add genre_cache.json
-            git commit -m "chore: 장르 매핑 캐시 갱신"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f genre_cache.json genre_ancestry.json 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: 장르 캐시 갱신"
             git push
           else
             echo "캐시 변경 없음"
