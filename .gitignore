@@ -14,3 +14,6 @@ venv/
 # 로컬 비밀값 (절대 커밋 금지)
 .env
 *.key
+
+genre_ancestry.json
+genre_cache.json
