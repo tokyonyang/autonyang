@@ -322,46 +322,39 @@ def _genre_call(session, genre_id):
 
 
 def list_genres(session, genre_id=0, raw=False):
-    """장르 트리 한 단계를 출력. 허용할 장르ID를 눈으로 고르기 위한 용도."""
+    """
+    장르 트리 한 단계를 출력. 허용할 장르ID를 눈으로 고르기 위한 용도.
+
+    실제 응답 구조 (2026-04 버전):
+      {"genre": {"genreId":.., "nameJa":.., "level":..},
+       "ancestors": [{"genreId":.., "nameJa":..}, ...],
+       "children":  [{"genreId":.., "nameJa":.., "level":..}, ...]}
+    문서상의 genreName/current/child 같은 필드명이 아니라 nameJa/genre 를 쓴다.
+    """
     d = _genre_call(session, genre_id)
 
     if raw:
-        # 실제 응답 구조를 그대로 보여준다. genreName 등 필드명이
-        # 문서와 다를 수 있어, 파싱이 안 맞을 때 이걸로 원인을 잡는다.
         print(json.dumps(d, ensure_ascii=False, indent=2)[:4000])
         return
 
-    def unwrap(node):
-        return node.get("child") or node.get("parent") or node if isinstance(node, dict) else {}
-
-    cur = d.get("current") or {}
-    if isinstance(cur, list):
-        cur = cur[0] if cur else {}
-    if cur:
-        print(f"\n현재: [{cur.get('genreId','')}] {cur.get('genreName','')}")
+    cur = d.get("genre") or {}
+    ancestors = d.get("ancestors") or []
+    if ancestors:
+        trail = " > ".join(a.get("nameJa", "") for a in ancestors)
+        print(f"\n경로: {trail}")
+    if cur.get("genreId") is not None:
+        print(f"현재: [{cur.get('genreId','')}] {cur.get('nameJa','') or '(최상위)'}")
 
     children = d.get("children") or []
     if not children:
-        if not cur:
-            print("응답이 비어 있습니다. 장르ID가 올바른지 확인하세요.")
-        else:
-            print("  하위 장르 없음 (여기가 말단 장르입니다)")
+        print("  하위 장르 없음 (여기가 말단 장르입니다)")
         return
 
     print(f"\n{'장르ID':>10}  장르명")
     print("  " + "-" * 44)
-    empty_names = 0
-    for c in children:
-        n = unwrap(c)
-        name = n.get("genreName", "")
-        if not name:
-            empty_names += 1
-        print(f"{str(n.get('genreId','')):>10}  {name}")
+    for n in children:
+        print(f"{str(n.get('genreId','')):>10}  {n.get('nameJa','')}")
     print(f"\n총 {len(children)}개. 더 내려가려면 --genre <장르ID> 를 붙여 다시 실행하세요.")
-    if empty_names:
-        print(f"\n[확인] 장르명이 비어있는 항목이 {empty_names}개 있습니다.\n"
-              f"       --raw 옵션으로 실제 응답 구조를 확인하세요:\n"
-              f"       python rakuten_collector.py genres --genre {genre_id} --raw")
 
 
 def _load_ancestry_cache():
@@ -380,17 +373,16 @@ def _save_ancestry_cache(cache):
 
 
 def genre_ancestry(session, genre_id, cache):
-    """genreId의 조상 ID 목록(자기 자신 포함)을 반환. 조회 결과는 캐시."""
+    """
+    genreId의 조상 ID 목록(자기 자신 포함)을 반환. 조회 결과는 캐시.
+    응답의 ancestors 는 최상위부터 순서대로 오는 평면 리스트다.
+    """
     key = str(genre_id)
     if key in cache:
         return cache[key]
 
     d = _genre_call(session, genre_id)
-    ids = []
-    for anc in (d.get("parents") or d.get("ancestors") or []):
-        n = anc.get("parent") or anc if isinstance(anc, dict) else {}
-        if n.get("genreId"):
-            ids.append(str(n["genreId"]))
+    ids = [str(a["genreId"]) for a in (d.get("ancestors") or []) if a.get("genreId") is not None]
     ids.append(key)
 
     cache[key] = ids
