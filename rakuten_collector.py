@@ -45,6 +45,9 @@ RANK_URL = "https://openapi.rakuten.co.jp/ichibaranking/api/IchibaItem/Ranking/2
 
 APP_ID = os.environ.get("RAKUTEN_APP_ID", "")
 ACCESS_KEY = os.environ.get("RAKUTEN_ACCESS_KEY", "")
+# 앱 등록 시 입력한 URL과 정확히 일치해야 한다. 다르면 403 HTTP_REFERRER_NOT_ALLOWED.
+# https://webservice.rakuten.co.jp/app/list 에서 본인 앱의 등록 URL을 확인해 설정.
+REFERRER = os.environ.get("RAKUTEN_REFERRER", "")
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
@@ -96,14 +99,22 @@ def calc_sale_price(jpy: int, cfg: PriceConfig) -> dict:
 # API 호출
 # ----------------------------------------------------------------------
 def _session() -> requests.Session:
+    if not REFERRER:
+        sys.exit(
+            "RAKUTEN_REFERRER 환경변수가 설정되지 않았습니다.\n"
+            "  2026년 API 개편으로 Referer 헤더가 필수가 됐고,\n"
+            "  값은 앱을 만들 때 입력한 URL과 정확히 일치해야 합니다.\n"
+            "  https://webservice.rakuten.co.jp/app/list 에서\n"
+            "  본인 앱의 '이용할 URL'을 확인한 뒤:\n"
+            '    export RAKUTEN_REFERRER="https://example.com"\n'
+            "  처럼 그대로 설정해 주세요. (뒤에 슬래시 유무까지 동일하게)")
     s = requests.Session()
     s.headers.update({
         "User-Agent": UA,
-        # 2026년 API 개편으로 Referer/Origin 헤더가 없으면 403이 난다
-        # (REQUEST_CONTEXT_BODY_HTTP_REFERRER_MISSING). 앱 등록 시 넣은
-        # URL과 다르더라도 라쿠텐 도메인이면 통과한다.
-        "Referer": "https://www.rakuten.co.jp/",
-        "Origin": "https://www.rakuten.co.jp/",
+        # 2026년 API 개편으로 Referer/Origin 헤더가 없으면 403이 난다.
+        # 등록 URL과 다르면 HTTP_REFERRER_NOT_ALLOWED 로 역시 403.
+        "Referer": REFERRER,
+        "Origin": REFERRER.rstrip("/"),
     })
     return s
 
