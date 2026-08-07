@@ -147,19 +147,41 @@ def api_call(session: requests.Session, _url: str = API_URL, **params) -> dict:
     raise RuntimeError("재시도 한도 초과")
 
 
+def _extract_items(data: dict) -> list:
+    """
+    라쿠텐 응답에서 상품 배열을 꺼낸다.
+    엔드포인트에 따라 키 대소문자가 다르다 (검색: 'items', 랭킹: 'Items').
+    항목이 {"item": {...}} 로 한 겹 감싸진 경우(구버전 포맷)도 방어적으로 벗긴다.
+    """
+    raw = data.get("items") or data.get("Items") or []
+    out = []
+    for e in raw:
+        if isinstance(e, dict) and "item" in e and "itemCode" not in e:
+            out.append(dict(e["item"]))
+        else:
+            out.append(e)
+    return out
+
+
+def _num(v, cast=int, default=0):
+    """
+    라쿠텐 응답은 formatVersion=2 를 줘도 숫자를 문자열로 주는 경우가 있다
+    (예: 랭킹 API의 itemPrice="2680"). 안전하게 숫자로 변환한다.
+    """
+    try:
+        return cast(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def collect(session, max_items=100, **params):
     """페이지네이션 수집. page는 최대 100 -> 검색당 이론상 3000개."""
     out, page = [], 1
     while len(out) < max_items and page <= 100:
         data = api_call(session, page=page, **params)
-        raw = data.get("items", [])
-        if not raw:
+        items = _extract_items(data)
+        if not items:
             break
-        # 방어적 언랩: formatVersion=2 를 줘도 {"item": {...}} 로 감싸져
-        # 오는 경우가 실제로 있었다 (랭킹 API에서 확인됨). 검색 API도 만약을
-        # 대비해 같은 방식으로 처리한다.
-        items = [dict(e["item"]) if isinstance(e, dict) and "item" in e else e
-                 for e in raw]
         out.extend(items)
         total = data.get("count", 0)
         print(f"  page {page} / 누적 {len(out)}건 (전체 {total}건)", file=sys.stderr)
@@ -202,21 +224,10 @@ def collect_ranking(session, max_items=100, genre=None, age=None,
             params["period"] = "realtime"
 
         data = api_call(session, RANK_URL, **params)
-        raw = data.get("items", [])
-        if not raw:
+        items = _extract_items(data)
+        if not items:
             break
-
-        # {"rank":N, "item":{...}} 래핑을 벗기고 rank를 item 안으로 합친다
-        page_items = []
-        for entry in raw:
-            if isinstance(entry, dict) and "item" in entry:
-                it = dict(entry["item"])
-                it["rank"] = entry.get("rank", it.get("rank", ""))
-                page_items.append(it)
-            else:
-                page_items.append(entry)
-
-        out.extend(page_items)
+        out.extend(items)
         print(f"  page {page} / 누적 {len(out)}건", file=sys.stderr)
         page += 1
         time.sleep(API_DELAY)
@@ -521,7 +532,7 @@ def normalize(item: dict, cfg: PriceConfig, extra: dict | None = None) -> dict:
             seen.add(key)
             all_imgs.append(u)
 
-    price = item.get("itemPrice", 0) or 0
+    price = _num(item.get("itemPrice"), int, 0)
     calc = calc_sale_price(price, cfg)
 
     return {
@@ -532,10 +543,10 @@ def normalize(item: dict, cfg: PriceConfig, extra: dict | None = None) -> dict:
         "캐치카피": item.get("catchcopy", ""),
         "가격_엔": price,
         **calc,
-        "재고": "있음" if item.get("availability") == 1 else "품절",
-        "해외배송가능": "Y" if item.get("shipOverseasFlag") == 1 else "N",
-        "리뷰수": item.get("reviewCount", 0),
-        "평점": item.get("reviewAverage", 0),
+        "재고": "있음" if _num(item.get("availability"), int, 0) == 1 else "품절",
+        "해외배송가능": "Y" if _num(item.get("shipOverseasFlag"), int, 0) == 1 else "N",
+        "리뷰수": _num(item.get("reviewCount"), int, 0),
+        "평점": _num(item.get("reviewAverage"), float, 0.0),
         "샵명": item.get("shopName", ""),
         "샵코드": item.get("shopCode", ""),
         "장르ID": item.get("genreId", ""),
@@ -647,12 +658,9 @@ def main():
         items = []
         for i, code in enumerate(codes, 1):
             d = api_call(session, itemCode=code)
-            got = d.get("items", [])
+            got = _extract_items(d)
             if got:
-                first = got[0]
-                if isinstance(first, dict) and "item" in first:
-                    first = dict(first["item"])
-                items.append(first)
+                items.append(got[0])
             else:
                 print(f"  [미발견] {code}", file=sys.stderr)
             print(f"  {i}/{len(codes)}", file=sys.stderr)
