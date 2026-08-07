@@ -321,9 +321,15 @@ def _genre_call(session, genre_id):
     return r.json()
 
 
-def list_genres(session, genre_id=0):
+def list_genres(session, genre_id=0, raw=False):
     """장르 트리 한 단계를 출력. 허용할 장르ID를 눈으로 고르기 위한 용도."""
     d = _genre_call(session, genre_id)
+
+    if raw:
+        # 실제 응답 구조를 그대로 보여준다. genreName 등 필드명이
+        # 문서와 다를 수 있어, 파싱이 안 맞을 때 이걸로 원인을 잡는다.
+        print(json.dumps(d, ensure_ascii=False, indent=2)[:4000])
+        return
 
     def unwrap(node):
         return node.get("child") or node.get("parent") or node if isinstance(node, dict) else {}
@@ -341,12 +347,21 @@ def list_genres(session, genre_id=0):
         else:
             print("  하위 장르 없음 (여기가 말단 장르입니다)")
         return
+
     print(f"\n{'장르ID':>10}  장르명")
     print("  " + "-" * 44)
+    empty_names = 0
     for c in children:
         n = unwrap(c)
-        print(f"{str(n.get('genreId','')):>10}  {n.get('genreName','')}")
+        name = n.get("genreName", "")
+        if not name:
+            empty_names += 1
+        print(f"{str(n.get('genreId','')):>10}  {name}")
     print(f"\n총 {len(children)}개. 더 내려가려면 --genre <장르ID> 를 붙여 다시 실행하세요.")
+    if empty_names:
+        print(f"\n[확인] 장르명이 비어있는 항목이 {empty_names}개 있습니다.\n"
+              f"       --raw 옵션으로 실제 응답 구조를 확인하세요:\n"
+              f"       python rakuten_collector.py genres --genre {genre_id} --raw")
 
 
 def _load_ancestry_cache():
@@ -571,6 +586,7 @@ def main():
 
     s5 = sub.add_parser("genres", help="장르 트리 조회 (허용 장르ID 확인용)")
     s5.add_argument("--genre", type=int, default=0, help="비우면 최상위 장르 목록")
+    s5.add_argument("--raw", action="store_true", help="원본 JSON 응답을 그대로 출력 (디버깅용)")
 
     s3 = sub.add_parser("urls", help="URL 목록 파일로 개별 수집")
     s3.add_argument("file")
@@ -580,7 +596,7 @@ def main():
     session = _session()
 
     if a.cmd == "genres":
-        list_genres(session, a.genre)
+        list_genres(session, a.genre, raw=a.raw)
         return
 
     cfg = PriceConfig(jpy_krw=a.rate)
