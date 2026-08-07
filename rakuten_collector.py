@@ -97,7 +97,14 @@ def calc_sale_price(jpy: int, cfg: PriceConfig) -> dict:
 # ----------------------------------------------------------------------
 def _session() -> requests.Session:
     s = requests.Session()
-    s.headers.update({"User-Agent": UA})
+    s.headers.update({
+        "User-Agent": UA,
+        # 2026년 API 개편으로 Referer/Origin 헤더가 없으면 403이 난다
+        # (REQUEST_CONTEXT_BODY_HTTP_REFERRER_MISSING). 앱 등록 시 넣은
+        # URL과 다르더라도 라쿠텐 도메인이면 통과한다.
+        "Referer": "https://www.rakuten.co.jp/",
+        "Origin": "https://www.rakuten.co.jp/",
+    })
     return s
 
 
@@ -125,12 +132,7 @@ def api_call(session: requests.Session, _url: str = API_URL, **params) -> dict:
             continue
         if r.status_code == 404:
             return {"items": [], "count": 0}
-        try:
-            e = r.json()
-            detail = f"{e.get('error','')}: {e.get('error_description','')}"
-        except Exception:
-            detail = r.text[:200]
-        sys.exit(f"API 오류 [{r.status_code}] {detail}")
+        sys.exit(f"API 오류 [{r.status_code}] {_api_error_text(r)}")
     raise RuntimeError("재시도 한도 초과")
 
 
@@ -267,6 +269,25 @@ GENRE_URL = "https://openapi.rakuten.co.jp/ichibagt/api/IchibaGenre/Search/20260
 ANCESTRY_CACHE = "genre_ancestry.json"
 
 
+def _api_error_text(r: requests.Response) -> str:
+    """
+    라쿠텐 에러 응답은 두 형식이 섞여 있다.
+      신형: {"errors": {"errorCode": 403, "errorMessage": "..."}}
+      구형: {"error": "wrong_parameter", "error_description": "..."}
+    """
+    try:
+        e = r.json()
+    except Exception:
+        return r.text[:200]
+
+    if "errors" in e and isinstance(e["errors"], dict):
+        inner = e["errors"]
+        return f"{inner.get('errorCode','')}: {inner.get('errorMessage','')}"
+    if "error" in e:
+        return f"{e.get('error','')}: {e.get('error_description','')}"
+    return str(e)[:200]
+
+
 def _check_keys():
     """키가 비었거나 자리표시자 그대로면 즉시 알려준다."""
     bad = {"", "...", "your_app_id", "xxx"}
@@ -285,12 +306,7 @@ def _genre_call(session, genre_id):
               "genreId": genre_id, "format": "json"}
     r = session.get(GENRE_URL, params=params, timeout=20)
     if r.status_code != 200:
-        try:
-            e = r.json()
-            msg = f"{e.get('error','')}: {e.get('error_description','')}"
-        except Exception:
-            msg = r.text[:200]
-        sys.exit(f"장르 API 오류 [{r.status_code}] {msg}")
+        sys.exit(f"장르 API 오류 [{r.status_code}] {_api_error_text(r)}")
     return r.json()
 
 
