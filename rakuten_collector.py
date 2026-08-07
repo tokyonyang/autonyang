@@ -152,9 +152,14 @@ def collect(session, max_items=100, **params):
     out, page = [], 1
     while len(out) < max_items and page <= 100:
         data = api_call(session, page=page, **params)
-        items = data.get("items", [])
-        if not items:
+        raw = data.get("items", [])
+        if not raw:
             break
+        # 방어적 언랩: formatVersion=2 를 줘도 {"item": {...}} 로 감싸져
+        # 오는 경우가 실제로 있었다 (랭킹 API에서 확인됨). 검색 API도 만약을
+        # 대비해 같은 방식으로 처리한다.
+        items = [dict(e["item"]) if isinstance(e, dict) and "item" in e else e
+                 for e in raw]
         out.extend(items)
         total = data.get("count", 0)
         print(f"  page {page} / 누적 {len(out)}건 (전체 {total}건)", file=sys.stderr)
@@ -174,6 +179,10 @@ def collect_ranking(session, max_items=100, genre=None, age=None,
       - genreId 와 age/sex 는 동시 지정 불가
       - page 는 1~34 (페이지당 30위, 최대 1000위)
       - period=realtime 을 age 와 같이 쓰면 age 는 20/30/40 만 허용
+
+    응답 구조 주의: 검색 API와 달리 랭킹 API는 formatVersion=2 를 줘도
+    각 항목이 {"rank": N, "item": {...}} 형태로 한 겹 더 감싸져 온다.
+    검색 API처럼 바로 item.get("itemName") 이 안 되고 래핑을 벗겨야 한다.
     """
     if genre and (age or sex is not None):
         sys.exit("장르와 연령/성별은 동시에 지정할 수 없습니다. 하나만 쓰세요.")
@@ -193,10 +202,21 @@ def collect_ranking(session, max_items=100, genre=None, age=None,
             params["period"] = "realtime"
 
         data = api_call(session, RANK_URL, **params)
-        items = data.get("items", [])
-        if not items:
+        raw = data.get("items", [])
+        if not raw:
             break
-        out.extend(items)
+
+        # {"rank":N, "item":{...}} 래핑을 벗기고 rank를 item 안으로 합친다
+        page_items = []
+        for entry in raw:
+            if isinstance(entry, dict) and "item" in entry:
+                it = dict(entry["item"])
+                it["rank"] = entry.get("rank", it.get("rank", ""))
+                page_items.append(it)
+            else:
+                page_items.append(entry)
+
+        out.extend(page_items)
         print(f"  page {page} / 누적 {len(out)}건", file=sys.stderr)
         page += 1
         time.sleep(API_DELAY)
@@ -629,7 +649,10 @@ def main():
             d = api_call(session, itemCode=code)
             got = d.get("items", [])
             if got:
-                items.append(got[0])
+                first = got[0]
+                if isinstance(first, dict) and "item" in first:
+                    first = dict(first["item"])
+                items.append(first)
             else:
                 print(f"  [미발견] {code}", file=sys.stderr)
             print(f"  {i}/{len(codes)}", file=sys.stderr)
