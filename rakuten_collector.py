@@ -304,6 +304,48 @@ def filter_items(items, brands=None, exclude_used=True):
     return kept, stat
 
 
+def load_brand_search_terms(path: str):
+    """
+    load_brands()는 필터링용으로 별칭을 정규화(NFKC/소문자)해서 원본 표기를
+    잃는다. 라쿠텐 검색창에 넣을 키워드는 원본 그대로 필요하므로 별도로
+    다시 읽는다. 형식은 동일: 대표명|영문|가타카나...
+    검색어로는 마지막 별칭(보통 일본어 표기)을 우선 쓰고, 하나뿐이면 그걸 쓴다.
+    """
+    out = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            names = [x.strip() for x in line.split("|") if x.strip()]
+            if names:
+                query = names[-1] if len(names) > 1 else names[0]
+                out.append((names[0], query))
+    return out
+
+
+def collect_by_brands(session, brand_terms, per_brand=15, genre=None,
+                      min_price=None, max_price=None):
+    """
+    브랜드마다 직접 키워드 검색을 돌려 그 브랜드 안에서 잘 팔리는 상품을 모은다.
+    종합 랭킹을 브랜드로 거르는 방식은 노네임 소형샵 상품에 묻혀 통과율이
+    매우 낮다 (실측 200건 중 19건, 그마저 브랜드 0건) — 브랜드 상품이 필요하면
+    처음부터 브랜드명으로 찾는 편이 훨씬 수율이 높다.
+    """
+    out = []
+    for canonical, query in brand_terms:
+        print(f"  [{canonical}] '{query}' 검색 중...", file=sys.stderr)
+        items = collect(session, max_items=per_brand, keyword=query,
+                        genreId=genre, minPrice=min_price, maxPrice=max_price,
+                        imageFlag=1, availability=1, sort="-reviewCount")
+        for it in items:
+            it["_brand"] = canonical
+        print(f"    {len(items)}건", file=sys.stderr)
+        out.extend(items)
+        time.sleep(API_DELAY)
+    return out
+
+
 # ----------------------------------------------------------------------
 # 장르 필터
 # ----------------------------------------------------------------------
@@ -611,6 +653,17 @@ def main():
     s5.add_argument("--genre", type=int, default=0, help="비우면 최상위 장르 목록")
     s5.add_argument("--raw", action="store_true", help="원본 JSON 응답을 그대로 출력 (디버깅용)")
 
+    s6 = sub.add_parser("brands", help="brands.txt 의 각 브랜드를 직접 검색 (권장)")
+    s6.add_argument("--brands", required=True, help="브랜드 목록 파일")
+    s6.add_argument("--per-brand", type=int, default=15, help="브랜드당 수집 개수")
+    s6.add_argument("--genre", type=int, default=None, help="특정 장르로 좁히기 (선택)")
+    s6.add_argument("--min-price", type=int, default=None)
+    s6.add_argument("--max-price", type=int, default=None)
+    s6.add_argument("--allow-used", action="store_true")
+    s6.add_argument("--rate", type=float, default=9.5)
+    s6.add_argument("--images", action="store_true")
+    s6.add_argument("--out", default="rakuten_brands.xlsx")
+
     s3 = sub.add_parser("urls", help="URL 목록 파일로 개별 수집")
     s3.add_argument("file")
     common(s3)
@@ -629,6 +682,14 @@ def main():
         items = collect(session, max_items=a.max, keyword=a.keyword,
                         genreId=a.genre, minPrice=a.min_price,
                         maxPrice=a.max_price, imageFlag=1, availability=1)
+    elif a.cmd == "brands":
+        terms = load_brand_search_terms(a.brands)
+        print(f"[브랜드 검색] {len(terms)}개 브랜드 x 최대 {a.per_brand}건")
+        items = collect_by_brands(session, terms, per_brand=a.per_brand,
+                                  genre=a.genre, min_price=a.min_price,
+                                  max_price=a.max_price)
+        items, _ = filter_items(items, brands=None,
+                                exclude_used=not a.allow_used)
     elif a.cmd == "ranking":
         print("[랭킹] " + (f"장르 {a.genre}" if a.genre else
                           f"연령 {a.age or '전체'} / 성별 {a.sex if a.sex is not None else '전체'}"))
