@@ -33,11 +33,15 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
-import requests
+
+# 라쿠텐 요청에 필요한 세션(Referer/Origin 헤더 포함)과 앱 키를 재사용한다.
+# 2026년 API 개편으로 이 헤더가 없으면 조용히 403이 나기 때문에 중요하다.
+try:
+    from rakuten_collector import _session as rk_session, APP_ID, ACCESS_KEY
+except ImportError:
+    sys.exit("rakuten_collector.py 를 같은 폴더에 두세요.")
 
 GENRE_API = "https://openapi.rakuten.co.jp/ichibagt/api/IchibaGenre/Search/20260401"
-APP_ID = os.environ.get("RAKUTEN_APP_ID", "")
-ACCESS_KEY = os.environ.get("RAKUTEN_ACCESS_KEY", "")
 
 MODEL = os.environ.get("ENRICH_MODEL", "gpt-4.1-mini")
 GENRE_CACHE = "genre_cache.json"
@@ -97,14 +101,14 @@ def save_cache(cache: dict, path=GENRE_CACHE):
 def fetch_genre_path(session, genre_id) -> str:
     """
     genreId 하나로 '靴 > レディース靴 > スニーカー' 형태의 전체 경로를 복원.
-    ancestors(상위 장르) + current(현재 장르)를 이어붙입니다.
+
+    실제 응답 구조 (2026-04 버전):
+      {"genre": {"genreId":.., "nameJa":..},
+       "ancestors": [{"genreId":.., "nameJa":..}, ...],  # 최상위부터 순서대로
+       "children": [...]}
     """
-    params = {
-        "applicationId": APP_ID,
-        "accessKey": ACCESS_KEY,
-        "genreId": genre_id,
-        "format": "json",
-    }
+    params = {"applicationId": APP_ID, "accessKey": ACCESS_KEY,
+              "genreId": genre_id, "format": "json"}
     try:
         r = session.get(GENRE_API, params=params, timeout=20)
         if r.status_code != 200:
@@ -113,123 +117,12 @@ def fetch_genre_path(session, genre_id) -> str:
     except Exception:
         return ""
 
-    def name_of(node):
-        if isinstance(node, dict):
-            inner = node.get("parent") or node.get("child") or node
-            return inner.get("genreName") or inner.get("nameJa") or ""
-        return ""
-
-    parts = []
-    for anc in (d.get("parents") or d.get("ancestors") or []):
-        n = name_of(anc)
-        if n:
-            parts.append(n)
-
-    cur = d.get("current") or d.get("genre") or {}
-    if isinstance(cur, list):
-        cur = cur[0] if cur else {}
-    n = cur.get("genreName") or cur.get("nameJa") or ""
-    if n:
-        parts.append(n)
+    parts = [a.get("nameJa", "") for a in (d.get("ancestors") or []) if a.get("nameJa")]
+    cur_name = (d.get("genre") or {}).get("nameJa", "")
+    if cur_name:
+        parts.append(cur_name)
 
     return " > ".join(parts)
-
-
-# ----------------------------------------------------------------------
-# 스마트스토어 카테고리
-# ----------------------------------------------------------------------
-def load_categories(path: str) -> pd.DataFrame:
-    """
-    컬럼 구조가 제각각이라 자동 판별:
-      - 값이 대부분 숫자인 열 -> 카테고리ID
-      - 나머지 문자열 열들을 이어붙여 -> 전체경로
-    """
-    if path.endswith((".xlsx", ".xls")):
-        df = pd.read_excel(path, dtype=str)
-    else:
-        try:
-            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
-        except UnicodeDecodeError:
-            df = pd.read_csv(path, dtype=str, encoding="cp949")
-    df = df.fillna("")
-
-    id_col = None
-    for c in df.columns:
-        s = df[c].astype(str).str.strip()
-        digits = s.str.fullmatch(r"\d{4,}").mean()
-        if digits > 0.8:
-            id_col = c
-            break
-    if id_col is None:
-        id_col = df.columns[0]
-
-    text_cols = [c for c in df.columns if c != id_col]
-    path_series = (df[text_cols].astype(str)
-                   .apply(lambda r: " > ".join([x.strip() for x in r if x.strip()]), axis=1))
-
-    out = pd.DataFrame({"cat_id": df[id_col].astype(str).str.strip(),
-                        "cat_path": path_series})
-    out = out[(out.cat_id != "") & (out.cat_path != "")].drop_duplicates("cat_id")
-    print(f"카테고리 {len(out)}건 로드 (ID열: {id_col})")
-    return out.reset_index(drop=True)
-
-
-def _norm(s: str) -> str:
-    return re.sub(r"[^가-힣A-Za-z0-9]", "", str(s or ""))
-
-
-def _bigrams(s: str) -> set:
-    s = _norm(s)
-    if len(s) < 2:
-        return {s} if s else set()
-    return {s[i:i + 2] for i in range(len(s) - 1)}
-
-
-def _dice(a: set, b: set) -> float:
-    if not a or not b:
-        return 0.0
-    return 2 * len(a & b) / (len(a) + len(b))
-
-
-def _leaf(path: str) -> str:
-    return str(path).split(">")[-1].strip()
-
-
-def shortlist(cat_df: pd.DataFrame, query: str, n: int = 30) -> list[tuple]:
-    """
-    번역된 장르 경로와 가까운 카테고리 후보를 추린다 (LLM 토큰 절약용).
-
-    단어 단위 비교로는 '헤어드라이어' vs '드라이어', '머그컵' vs '머그' 처럼
-    한쪽이 다른 쪽을 품는 경우를 놓친다. 문자 2-gram 유사도로 비교하고,
-    실제 상품 분류를 좌우하는 말단(leaf) 이름에 가중치를 크게 둔다.
-    """
-    q_full = _bigrams(query)
-    q_leaf_txt = _norm(_leaf(query))
-    q_leaf = _bigrams(q_leaf_txt)
-
-    scored = []
-    for cid, path in zip(cat_df.cat_id, cat_df.cat_path):
-        leaf_txt = _norm(_leaf(path))
-        score = (0.35 * _dice(q_full, _bigrams(path))
-                 + 0.65 * _dice(q_leaf, _bigrams(leaf_txt)))
-        # 한쪽이 다른 쪽을 포함하면 강한 신호
-        if q_leaf_txt and leaf_txt:
-            if q_leaf_txt in leaf_txt or leaf_txt in q_leaf_txt:
-                score += 0.35
-        if q_leaf_txt and q_leaf_txt in _norm(path):
-            score += 0.15
-        if score > 0.05:
-            scored.append((score, str(cid), path))
-
-    scored.sort(key=lambda x: -x[0])
-    return [(c, p) for _, c, p in scored[:n]]
-
-
-GENRE_SYS = """너는 일본 라쿠텐 상품을 한국 오픈마켓에 등록하는 구매대행 셀러의 보조다.
-일본어 상품 장르 경로를 한국어로 번역하고, 주어진 스마트스토어 카테고리 후보 중
-가장 알맞은 하나를 고른다.
-반드시 JSON만 출력한다: {"ko_path": "...", "cat_id": "...", "cat_path": "...", "confidence": 0.0~1.0}
-후보 중 적절한 게 없으면 cat_id를 빈 문자열로 둔다."""
 
 
 def map_genres(client, session, genre_ids, cat_df, cache: dict):
@@ -364,7 +257,7 @@ def main():
     print(f"입력 {len(df)}건")
 
     client = get_client()
-    session = requests.Session()
+    session = rk_session()
 
     # 1단계
     if not a.no_category:
