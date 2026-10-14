@@ -7,7 +7,7 @@ on:
       mode:
         description: "수집 방식"
         type: choice
-        options: [ranking, search, shop, urls]
+        options: [ranking, search, shop, urls, rank_brands]
         default: ranking
       query:
         description: "키워드 / 샵코드 (ranking·urls 모드에서는 비워두세요)"
@@ -27,6 +27,12 @@ on:
       allow_genres:
         description: "허용 장르ID (쉼표 구분). 비우면 GENRE_ALLOWLIST 변수 사용"
         default: ""
+      rank_top:
+        description: "[rank_brands] 소싱 랭킹 상위 몇 개 브랜드까지 볼지"
+        default: "30"
+      per_brand:
+        description: "[rank_brands] 브랜드당 수집 개수"
+        default: "15"
       max:
         description: "최대 수집 개수"
         default: "50"
@@ -71,7 +77,22 @@ jobs:
         env:
           RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
           RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
+          RAKUTEN_REFERRER: ${{ secrets.RAKUTEN_REFERRER || vars.RAKUTEN_REFERRER }}
         run: |
+          # 소싱 랭킹 상위 브랜드 -> brands_active.txt -> 브랜드별 수집
+          if [ "${{ inputs.mode }}" = "rank_brands" ]; then
+            python rank_to_brands.py --top "${{ inputs.rank_top }}" --out brands_active.txt
+            BARGS=""
+            [ "${{ inputs.images }}" = "true" ] && BARGS="$BARGS --images"
+            [ -n "${{ inputs.min_price }}" ] && BARGS="$BARGS --min-price ${{ inputs.min_price }}"
+            [ -n "${{ inputs.max_price }}" ] && BARGS="$BARGS --max-price ${{ inputs.max_price }}"
+            [ -n "${{ inputs.genre }}" ] && BARGS="$BARGS --genre ${{ inputs.genre }}"
+            python rakuten_collector.py brands --brands brands_active.txt \
+              --per-brand "${{ inputs.per_brand }}" --rate "${{ inputs.rate }}" \
+              --out rakuten_items.xlsx $BARGS
+            exit 0
+          fi
+
           ARGS=""
           [ "${{ inputs.images }}" = "true" ] && ARGS="$ARGS --images"
           [ "${{ inputs.brands_only }}" = "true" ] && ARGS="$ARGS --brands brands.txt"
